@@ -133,7 +133,7 @@ void LowPower_Handler( void )
 //  DBG_GPIO_RST(GPIOB, GPIO_PIN_15);
   
 //  DBG_GPIO_RST(GPIOB, GPIO_PIN_14);
-  
+LowPower_State = 0;
   if ( LowPower_State == 0 )
   {
 //    DBG_PRINTF("dz\n");

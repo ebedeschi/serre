@@ -45,13 +45,17 @@
 #include "lora.h"
 #include "timeServer.h"
 #include "SHT2x/SHT2x.h"
+#include "Vbat/Vbat.h"
+#include "BH1750/BH1750c.h"
 #include "vcom.h"
 #include "version.h"
+#include "radio.h"
+#include "crc32/crc32.h"
 
 /*!
  * Defines the application data transmission duty cycle. 5s, value in [ms].
  */
-#define APP_TX_DUTYCYCLE                            20000
+#define APP_TX_DUTYCYCLE                            60000
 /*!
  * LoRaWAN Adaptive Data Rate
  * @note Please note that when ADR is enabled the end-device should be static
@@ -77,8 +81,8 @@ extern SPI_HandleTypeDef hspi;
 extern RTC_HandleTypeDef RtcHandle;
 
 char Buffer[100];
-uint16_t sT;
-float   temperatureC;           //variable for temperature[°C] as float
+uint16_t sT, sH;
+float   temperatureC, humidityH;           //variable for temperature[°C] as float
 uint8_t  error = 0;              //variable for error code. For codes see system.h
 
 TimerEvent_t wakeup;
@@ -124,9 +128,16 @@ void Error_Handler(void);
 
 /* USER CODE BEGIN 0 */
 
+void fai()
+{}
+
 static void OnWakeup( void )
 {
 //	PRINTF("OnWakeup\n");
+//	HAL_GPIO_TogglePin(LED2_GPIO_Port, LED2_Pin);
+//	HAL_GPIO_TogglePin(LED1_GPIO_Port, LED1_Pin);
+//	HAL_Delay(5000); //delay
+//	HAL_GPIO_TogglePin(LED1_GPIO_Port, LED1_Pin);
     TimerStop( &wakeup );
 }
 
@@ -153,39 +164,9 @@ int main(void)
 //  MX_SPI1_Init();
 //  MX_USART3_UART_Init();
   MX_RTC_Init();
-//  MX_ADC3_Init();
+  MX_ADC3_Init();
 
   /* USER CODE BEGIN 2 */
-
-//  	char word[20];
-//  	error |= SHT2x_MeasureHM(TEMP, &sT);
-//  	temperatureC = SHT2x_CalcTemperatureC(sT);
-//  	int d1 = temperatureC;
-//  	float f2 = temperatureC - d1;
-//  	int d2 = trunc(f2 * 10000);
-//  	sprintf(word,"%d.%04d", d1, d2);
-//  	int i = 0;
-//  	for(i = 0; i<strlen(word); i++){
-//  	sprintf(Buffer+i*2, "%02X", word[i]);
-//  	}
-//  	PRINTF("%s\n", Buffer);
-
-//  uint32_t g_ADCValue = 0;
-//  double con = 0.00118359375;
-////  double con = 0.0023671875;
-//  double v = 0;
-//
-//  HAL_GPIO_WritePin(ADCEN_GPIO_Port, ADCEN_Pin, GPIO_PIN_SET);
-//
-//  HAL_ADC_Start(&hadc3);
-//
-//  if (HAL_ADC_PollForConversion(&hadc3, 1000000) == HAL_OK)
-//  {
-//      g_ADCValue = HAL_ADC_GetValue(&hadc3);
-//  }
-//
-//  v = con * g_ADCValue;
-
 
   HAL_GPIO_WritePin(RFPOWER_GPIO_Port, RFPOWER_Pin, GPIO_PIN_RESET);
   HAL_GPIO_WritePin(RADIO_NRESET_GPIO_Port, RADIO_NRESET_Pin, GPIO_PIN_SET);
@@ -194,15 +175,29 @@ int main(void)
 
   /* Configure the hardware*/
   HW_Init( );
-//  HW_RTC_Init( );
-
-  HAL_Delay(1000); //delay
 
   /* Configure the Lora Stack*/
-  lora_Init( &LoRaMainCallbacks, &LoRaParamInit);
+//  lora_Init( &LoRaMainCallbacks, &LoRaParamInit);
+//
+//  PRINTF("VERSION: %X\n", VERSION);
 
-  PRINTF("VERSION: %X\n", VERSION);
+    char b[100]={'\0'};
+    uint8_t blen = 0;
+    RadioEvents_t re;
+    re.TxDone = fai;
+    re.RxDone = fai;
+    re.RxError = fai;
+    re.TxTimeout = fai;
+    re.RxTimeout = fai;
+    Radio.Init( &re );
+    Radio.SetChannel( 868000000 );
 
+  	BH1750 luxMeter;
+  	//crea handle luxMeter. Lo collega all'indirizzo basso
+  	luxMeter = BH1750_CreateHandle(&hi2c1, BH1750_LOW_ADDRESS);
+  	//inizializza la periferica in CONTINUOUS_HIGH_RES_MODE_1
+  	BH1750_Begin(luxMeter, CONTINUOUS_HIGH_RES_MODE_1);
+  	HAL_Delay(10);
 
   /* USER CODE END 2 */
 
@@ -211,26 +206,62 @@ int main(void)
   while (1)
   {
 	  /* run the LoRa class A state machine*/
-	  lora_fsm( );
+//	  lora_fsm( );
+
+		uint16_t vbat = 0;
+		vbat = getVbat(hadc3);
+
+		char temp[20];
+		error |= SHT2x_MeasureHM(TEMP, &sT);
+		temperatureC = SHT2x_CalcTemperatureC(sT);
+		int d1 = temperatureC;
+		float f2 = ((float)temperatureC) - d1;
+		int d2 = trunc(f2 * 100);
+		sprintf(temp,"%d.%d", d1, d2);
+		char hum[20];
+		error |= SHT2x_MeasureHM(HUMIDITY, &sH);
+		humidityH = SHT2x_CalcRH(sH);
+		d1 = humidityH;
+		f2 = ((float)humidityH) - d1;
+		d2 = trunc(f2 * 100);
+		sprintf(hum,"%d.%d", d1, d2);
+
+		int lux = BH1750_ReadLightLevel(luxMeter);
+
+		b[0]=100;
+		b[1]=1;
+		b[2]=100;
+		b[3]=0;
+		b[4]='\0';
+		sprintf(&b[4], "%s:%s:%d:%d", temp, hum, lux, vbat);
+		blen = strlen(&b[4]) + 4;
+
+		uint32_t crc = crc32(0, &b[4], blen - 4);
+		memcpy(&b[blen], &crc, 4);
+		blen += 4;
+
+		Radio.SetTxConfig( MODEM_LORA, 5, 0, 0, 7, 1, 8, false, true, 0, 0, false, 3000 );
+		Radio.Send( b, blen );
+//		HAL_Delay(1000);
 
   /* USER CODE END WHILE */
 
   /* USER CODE BEGIN 3 */
 
 //	TimerInit( &wakeup, OnWakeup );
-//	TimerSetValue( &wakeup, 10000 );
+//	TimerSetValue( &wakeup, 5000 );
 //	TimerStart( &wakeup );
-
-	DISABLE_IRQ( );
-    if ( lora_getDeviceState( ) == DEVICE_STATE_SLEEP )
-    {
-		  LowPower_Handler( );
-    }
-	ENABLE_IRQ();
+//
+//	DISABLE_IRQ( );
+////    if ( lora_getDeviceState( ) == DEVICE_STATE_SLEEP )
+////    {
+//		  LowPower_Handler( );
+////    }
+//	ENABLE_IRQ();
 
 //	  PRINTF("Hello\r\n");
-//	  HAL_GPIO_TogglePin(LED1_GPIO_Port, LED1_Pin);
-//	  HAL_Delay(5000); //delay
+	  HAL_GPIO_TogglePin(LED1_GPIO_Port, LED1_Pin);
+	  HAL_Delay(10000); //delay
   }
   /* USER CODE END 3 */
 
@@ -238,73 +269,73 @@ int main(void)
 
 /** System Clock Configuration
 */
-//void SystemClock_Config(void)
-//{
-//
-//  RCC_OscInitTypeDef RCC_OscInitStruct;
-//  RCC_ClkInitTypeDef RCC_ClkInitStruct;
-//  RCC_PeriphCLKInitTypeDef PeriphClkInit;
-//
-//  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_LSE|RCC_OSCILLATORTYPE_MSI;
-//  RCC_OscInitStruct.LSEState = RCC_LSE_ON;
-//  RCC_OscInitStruct.MSIState = RCC_MSI_ON;
-//  RCC_OscInitStruct.MSICalibrationValue = 0;
-//  RCC_OscInitStruct.MSIClockRange = RCC_MSIRANGE_6;
-//  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
-//  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_MSI;
-//  RCC_OscInitStruct.PLL.PLLM = 1;
-//  RCC_OscInitStruct.PLL.PLLN = 40;
-//  RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV7;
-//  RCC_OscInitStruct.PLL.PLLQ = RCC_PLLQ_DIV2;
-//  RCC_OscInitStruct.PLL.PLLR = RCC_PLLR_DIV2;
-//  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
-//  {
-//    Error_Handler();
-//  }
-//
-//  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
-//                              |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
-//  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
-//  RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
-//  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV1;
-//  RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
-//  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_4) != HAL_OK)
-//  {
-//    Error_Handler();
-//  }
-//
-//  PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_RTC|RCC_PERIPHCLK_USART3
-//                              |RCC_PERIPHCLK_I2C1|RCC_PERIPHCLK_ADC;
-//  PeriphClkInit.Usart3ClockSelection = RCC_USART3CLKSOURCE_PCLK1;
-//  PeriphClkInit.I2c1ClockSelection = RCC_I2C1CLKSOURCE_PCLK1;
-//  PeriphClkInit.AdcClockSelection = RCC_ADCCLKSOURCE_PLLSAI1;
-//  PeriphClkInit.RTCClockSelection = RCC_RTCCLKSOURCE_LSE;
-//  PeriphClkInit.PLLSAI1.PLLSAI1Source = RCC_PLLSOURCE_MSI;
-//  PeriphClkInit.PLLSAI1.PLLSAI1M = 1;
-//  PeriphClkInit.PLLSAI1.PLLSAI1N = 16;
-//  PeriphClkInit.PLLSAI1.PLLSAI1P = RCC_PLLP_DIV7;
-//  PeriphClkInit.PLLSAI1.PLLSAI1Q = RCC_PLLQ_DIV2;
-//  PeriphClkInit.PLLSAI1.PLLSAI1R = RCC_PLLR_DIV2;
-//  PeriphClkInit.PLLSAI1.PLLSAI1ClockOut = RCC_PLLSAI1_ADC1CLK;
-//  if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK)
-//  {
-//    Error_Handler();
-//  }
-//
-//  __HAL_RCC_PWR_CLK_ENABLE();
-//
-//  if (HAL_PWREx_ControlVoltageScaling(PWR_REGULATOR_VOLTAGE_SCALE1) != HAL_OK)
-//  {
-//    Error_Handler();
-//  }
-//
-//  HAL_SYSTICK_Config(HAL_RCC_GetHCLKFreq()/1000);
-//
-//  HAL_SYSTICK_CLKSourceConfig(SYSTICK_CLKSOURCE_HCLK);
-//
-//  /* SysTick_IRQn interrupt configuration */
-//  HAL_NVIC_SetPriority(SysTick_IRQn, 0, 0);
-//}
+void SystemClock_Config(void)
+{
+
+  RCC_OscInitTypeDef RCC_OscInitStruct;
+  RCC_ClkInitTypeDef RCC_ClkInitStruct;
+  RCC_PeriphCLKInitTypeDef PeriphClkInit;
+
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_LSE|RCC_OSCILLATORTYPE_MSI;
+  RCC_OscInitStruct.LSEState = RCC_LSE_ON;
+  RCC_OscInitStruct.MSIState = RCC_MSI_ON;
+  RCC_OscInitStruct.MSICalibrationValue = 0;
+  RCC_OscInitStruct.MSIClockRange = RCC_MSIRANGE_6;
+  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
+  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_MSI;
+  RCC_OscInitStruct.PLL.PLLM = 1;
+  RCC_OscInitStruct.PLL.PLLN = 40;
+  RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV7;
+  RCC_OscInitStruct.PLL.PLLQ = RCC_PLLQ_DIV2;
+  RCC_OscInitStruct.PLL.PLLR = RCC_PLLR_DIV2;
+  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
+                              |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
+  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
+  RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
+  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV1;
+  RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_4) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_RTC|RCC_PERIPHCLK_USART3
+                              |RCC_PERIPHCLK_I2C1|RCC_PERIPHCLK_ADC;
+  PeriphClkInit.Usart3ClockSelection = RCC_USART3CLKSOURCE_PCLK1;
+  PeriphClkInit.I2c1ClockSelection = RCC_I2C1CLKSOURCE_PCLK1;
+  PeriphClkInit.AdcClockSelection = RCC_ADCCLKSOURCE_PLLSAI1;
+  PeriphClkInit.RTCClockSelection = RCC_RTCCLKSOURCE_LSE;
+  PeriphClkInit.PLLSAI1.PLLSAI1Source = RCC_PLLSOURCE_MSI;
+  PeriphClkInit.PLLSAI1.PLLSAI1M = 1;
+  PeriphClkInit.PLLSAI1.PLLSAI1N = 16;
+  PeriphClkInit.PLLSAI1.PLLSAI1P = RCC_PLLP_DIV7;
+  PeriphClkInit.PLLSAI1.PLLSAI1Q = RCC_PLLQ_DIV2;
+  PeriphClkInit.PLLSAI1.PLLSAI1R = RCC_PLLR_DIV2;
+  PeriphClkInit.PLLSAI1.PLLSAI1ClockOut = RCC_PLLSAI1_ADC1CLK;
+  if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  __HAL_RCC_PWR_CLK_ENABLE();
+
+  if (HAL_PWREx_ControlVoltageScaling(PWR_REGULATOR_VOLTAGE_SCALE1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  HAL_SYSTICK_Config(HAL_RCC_GetHCLKFreq()/1000);
+
+  HAL_SYSTICK_CLKSourceConfig(SYSTICK_CLKSOURCE_HCLK);
+
+  /* SysTick_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(SysTick_IRQn, 0, 0);
+}
 
 /* USER CODE BEGIN 4 */
 
