@@ -170,6 +170,7 @@ int main(void)
 
   HAL_GPIO_WritePin(RFPOWER_GPIO_Port, RFPOWER_Pin, GPIO_PIN_RESET);
   HAL_GPIO_WritePin(RADIO_NRESET_GPIO_Port, RADIO_NRESET_Pin, GPIO_PIN_SET);
+  HAL_GPIO_WritePin(RADIO_NSS_GPIO_Port, RADIO_NSS_Pin, GPIO_PIN_SET);
 
 //  hspi = hspi1;
 
@@ -259,9 +260,9 @@ int main(void)
 ////    }
 //	ENABLE_IRQ();
 
-//	  PRINTF("Hello\r\n");
+////	  PRINTF("Hello\r\n");
 	  HAL_GPIO_TogglePin(LED1_GPIO_Port, LED1_Pin);
-	  HAL_Delay(10000); //delay
+	  HAL_Delay(60000); //delay
   }
   /* USER CODE END 3 */
 
